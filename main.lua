@@ -83,49 +83,50 @@ addToggle(Farm, "Farm", "Auto Sell",
     "No game action connected.")
 
 -- Auto Collect diagnostic
+
 addToggle(
     Farm,
     "Farm",
     "Auto Collect",
-    "Inspect plots and collection remote.",
+    "Collect balances from all plot IDs.",
     function(enabled)
-        local key = "Farm_Auto Collect"
+        local key = "AutoCollectAllPlots"
+
+        running[key] = enabled
 
         if not enabled then
-            running[key] = false
             print("[dilangauto] Auto Collect stopped")
             return
         end
 
-        local ReplicatedStorage = game:GetService("ReplicatedStorage")
-        local plotsFolder = workspace:FindFirstChild("Plots")
+        task.spawn(function()
+            local remote = game:GetService("ReplicatedStorage")
+                :WaitForChild("Network")
+                :WaitForChild("PlotService")
+                :WaitForChild("RE")
+                :WaitForChild("CollectBalance")
 
-        if not plotsFolder then
-            warn("[dilangauto] workspace.Plots not found")
-            return
-        end
+            while running[key] do
+                for plotId = 1, 20 do
+                    if not running[key] then
+                        break
+                    end
 
-        local network = ReplicatedStorage:FindFirstChild("Network")
-        local plotService = network and network:FindFirstChild("PlotService")
-        local remoteFolder = plotService and plotService:FindFirstChild("RE")
-        local remote = remoteFolder and remoteFolder:FindFirstChild("CollectBalance")
+                    local ok, err = pcall(function()
+                        remote:FireServer(plotId)
+                    end)
 
-        if not remote then
-            warn("[dilangauto] CollectBalance remote not found")
-            return
-        end
+                    if not ok then
+                        warn("[dilangauto] Plot", plotId, err)
+                    end
+                end
 
-        print("[dilangauto] Remote class:", remote.ClassName)
-        print("[dilangauto] Plot count:", #plotsFolder:GetChildren())
-
-        for _, plot in ipairs(plotsFolder:GetChildren()) do
-            print("[dilangauto] Plot:", plot:GetFullName(), plot.ClassName)
-        end
-
-        print("[dilangauto] Inspection complete.")
-        print("[dilangauto] No server requests sent: plot IDs unverified.")
+                task.wait(2)
+            end
+        end)
     end
 )
+
 
 addToggle(Farm, "Farm", "Auto Rebirth",
     "No game action connected.")
