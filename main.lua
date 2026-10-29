@@ -230,8 +230,48 @@ addToggle(Farm, "Farm", "Auto Roll",
 addToggle(Farm, "Farm", "Auto Sell",
     "Placeholder: no game action connected.")
 
-addToggle(Farm, "Farm", "Auto Collect",
-    "Status toggle only: collection action not connected.")
+addToggle(
+    Farm,
+    "Farm",
+    "Auto Collect",
+    "Collect balances from all plot IDs.",
+    function(enabled)
+        local key = "AutoCollectAllPlots"
+
+        running[key] = enabled
+
+        if not enabled then
+            print("[dilangauto] Auto Collect stopped")
+            return
+        end
+
+        task.spawn(function()
+            local remote = game:GetService("ReplicatedStorage")
+                :WaitForChild("Network")
+                :WaitForChild("PlotService")
+                :WaitForChild("RE")
+                :WaitForChild("CollectBalance")
+
+            while running[key] do
+                for plotId = 1, 20 do
+                    if not running[key] then
+                        break
+                    end
+
+                    local ok, err = pcall(function()
+                        remote:FireServer(plotId)
+                    end)
+
+                    if not ok then
+                        warn("[dilangauto] Plot", plotId, err)
+                    end
+                end
+
+                task.wait(2)
+            end
+        end)
+    end
+)
 
 addToggle(Farm, "Farm", "Auto Rebirth",
     "Placeholder: no game action connected.")
