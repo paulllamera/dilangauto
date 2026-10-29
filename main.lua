@@ -1,13 +1,46 @@
 
 -- dilangauto.lua
--- Rayfield Gen2 UI
+-- Rayfield Gen2 UI with JSON auto-save and Anti-AFK
 
-local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 local VirtualUser = game:GetService("VirtualUser")
 
 local CONFIG_FILE = "dilangauto_config.json"
-local TOAST_ICON = 125823673784681
+
+local Config = {
+    toggles = {},
+}
+
+if type(isfile) == "function"
+    and type(readfile) == "function"
+    and isfile(CONFIG_FILE)
+then
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+
+    if ok and type(data) == "table" then
+        if type(data.toggles) == "table" then
+            Config.toggles = data.toggles
+        end
+    end
+end
+
+local function saveConfig()
+    if type(writefile) ~= "function" then
+        warn("[dilangauto] JSON file saving is not supported.")
+        return
+    end
+
+    local ok, err = pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
+    end)
+
+    if not ok then
+        warn("[dilangauto] Config save failed:", err)
+    end
+end
 
 local Rayfield = loadstring(game:HttpGet(
     "https://sirius.menu/gen2"
@@ -19,223 +52,106 @@ local Window = Rayfield:CreateWindow({
     sidebarLayout = true,
 })
 
-local LocalPlayer = Players.LocalPlayer
 local running = {}
 local connections = {}
-local restorations = {}
-local unloaded = false
-local configReady = false
-
--- CONFIG
-
-local function loadConfig()
-    if type(isfile) ~= "function"
-        or type(readfile) ~= "function" then
-        return { toggles = {} }
-    end
-
-    local ok, exists = pcall(isfile, CONFIG_FILE)
-    if not ok or not exists then
-        return { toggles = {} }
-    end
-
-    local readOk, result = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIG_FILE))
-    end)
-
-    if readOk and type(result) == "table" then
-        if type(result.toggles) ~= "table" then
-            result.toggles = {}
-        end
-        return result
-    end
-
-    warn("[dilangauto] Config invalid; defaults used")
-    return { toggles = {} }
-end
-
-local Config = loadConfig()
-
-local function saveConfig()
-    if type(writefile) ~= "function" then
-        warn("[dilangauto] writefile unavailable")
-        return false
-    end
-
-    local ok, err = pcall(function()
-        writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
-    end)
-
-    if not ok then
-        warn("[dilangauto] Config save failed:", err)
-        return false
-    end
-
-    return true
-end
-
--- NOTIFICATIONS
-
-local function notify(title, subtitle)
-    if unloaded then return end
-
-    local options = {
-        title = tostring(title),
-        icon = TOAST_ICON,
-    }
-
-    if subtitle then
-        options.subtitle = tostring(subtitle)
-    end
-
-    local ok, err = pcall(function()
-        Window:Toast(options)
-    end)
-
-    if not ok then
-        warn("[dilangauto] Toast failed:", err)
-    end
-end
-
-local function notifyError(action, err)
-    warn("[dilangauto] " .. action .. " failed:", err)
-    notify(action .. " failed", tostring(err))
-end
-
--- TABS
+local restorers = {}
+local unloading = false
 
 local function makeTab(name, icon)
-    local ok, tab = pcall(function()
-        return Window:CreateTab({
-            name = name,
-            icon = icon,
-        })
-    end)
-
-    if not ok then
-        notifyError("Create tab: " .. name, tab)
-        return nil
-    end
-
-    return tab
+    return Window:CreateTab({
+        name = name,
+        icon = icon,
+    })
 end
-
-local Halloween = makeTab("Halloween", 93364949241311)
-local Farm = makeTab("Farm", 4483362458)
-local Units = makeTab("Units", 6031094678)
-local Tower = makeTab("Tower", 6031265976)
-local Settings = makeTab("Settings", 7733960981)
-
--- ANTI-AFK
-
-local function setAntiAfk(enabled)
-    if connections.antiAfk then
-        connections.antiAfk:Disconnect()
-        connections.antiAfk = nil
-    end
-
-    if not enabled then return end
-
-    assert(LocalPlayer, "LocalPlayer unavailable")
-
-    connections.antiAfk = LocalPlayer.Idled:Connect(function()
-        if unloaded or not running["Settings_AntiAFK"] then
-            return
-        end
-
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-        end)
-    end)
-end
-
--- TOGGLE BUILDER
 
 local function addToggle(tab, tabName, name, purpose, onChanged)
-    if not tab then return end
-
     local key = tabName .. "_" .. name:gsub("%W", "")
-    local savedValue = Config.toggles[key] == true
+    local initialValue = Config.toggles[key] == true
 
-    running[key] = savedValue
-
-    local function applyValue(value, showToast)
-        if unloaded then return end
-
-        value = value == true
+    local function applyCallback(value)
         running[key] = value
-        Config.toggles[key] = value
-
-        if configReady then
-            saveConfig()
-        end
-
-        if onChanged then
-            local ok, err = pcall(onChanged, value)
-            if not ok then
-                notifyError(name, err)
-            end
-        else
-            print("[dilangauto][Info] " .. purpose)
-        end
 
         print(
             "[dilangauto][" .. tabName .. "] "
             .. name .. ": " .. tostring(value)
         )
 
-        if showToast then
-            notify(name, value and "Enabled" or "Disabled")
+        if onChanged then
+            local ok, err = pcall(onChanged, value)
+
+            if not ok then
+                warn("[dilangauto] Callback error:", err)
+            end
+        else
+            print("[dilangauto][Info] " .. purpose)
         end
     end
 
-    local ok, result = pcall(function()
-        return tab:CreateToggle({
-            name = name,
-            flag = key,
-            value = savedValue,
+    local toggle = tab:CreateToggle({
+        name = name,
+        flag = key,
+        value = initialValue,
 
-            callback = function(value)
-                applyValue(value, true)
-            end,
-        })
-    end)
+        callback = function(value)
+            if unloading then
+                return
+            end
 
-    if not ok then
-        notifyError("Create toggle: " .. name, result)
+            Config.toggles[key] = value
+            saveConfig()
+            applyCallback(value)
+        end,
+    })
+
+    restorers[#restorers + 1] = function()
+        if initialValue then
+            applyCallback(true)
+        else
+            running[key] = false
+        end
+    end
+
+    return toggle
+end
+
+local function addButton(tab, name, callback)
+    tab:CreateButton({
+        name = name,
+        callback = callback,
+    })
+end
+
+-- ANTI-AFK
+
+local function startAntiAfk()
+    local player = Players.LocalPlayer
+
+    if not player then
         return
     end
 
-    -- Apply saved state once after all controls exist.
-    table.insert(restorations, function()
-        applyValue(savedValue, false)
-    end)
+    connections[#connections + 1] =
+        player.Idled:Connect(function()
+            if unloading then
+                return
+            end
+
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+        end)
 end
 
--- BUTTON BUILDER
+startAntiAfk()
 
-local function addButton(tab, name, callback)
-    if not tab then return end
+-- TABS
 
-    local ok, err = pcall(function()
-        tab:CreateButton({
-            name = name,
-            callback = function()
-                if unloaded then return end
-
-                local runOk, runErr = pcall(callback)
-                if not runOk then
-                    notifyError(name, runErr)
-                end
-            end,
-        })
-    end)
-
-    if not ok then
-        notifyError("Create button: " .. name, err)
-    end
-end
+local Halloween = makeTab("Halloween", 93364949241311)
+local Farm = makeTab("Farm", 4483362458)
+local Units = makeTab("Units", 6031094678)
+local Tower = makeTab("Tower", 6031265976)
+local Settings = makeTab("Settings", 7733960981)
 
 -- HALLOWEEN
 
@@ -262,18 +178,27 @@ addToggle(
 
 -- FARM
 
-addToggle(Farm, "Farm", "Auto Roll", "No game action connected.")
-addToggle(Farm, "Farm", "Auto Sell", "No game action connected.")
+addToggle(
+    Farm,
+    "Farm",
+    "Auto Roll",
+    "No game action connected."
+)
+
+addToggle(
+    Farm,
+    "Farm",
+    "Auto Sell",
+    "No game action connected."
+)
 
 -- AUTO COLLECT
--- Worker state uses same key as toggle state.
--- Connect authorized collection logic in your own game here.
 
 addToggle(
     Farm,
     "Farm",
     "Auto Collect",
-    "Collection handler not connected.",
+    "Collect balances from all plot IDs.",
     function(enabled)
         local key = "Farm_AutoCollect"
 
@@ -284,13 +209,61 @@ addToggle(
             return
         end
 
-        print("[dilangauto] Auto Collect enabled")
-        -- Add your own game's authorized collection handler here.
+        task.spawn(function()
+            local remote
+
+            local ok, result = pcall(function()
+                return game:GetService("ReplicatedStorage")
+                    :WaitForChild("Network")
+                    :WaitForChild("PlotService")
+                    :WaitForChild("RE")
+                    :WaitForChild("CollectBalance")
+            end)
+
+            if not ok then
+                warn("[dilangauto] Could not find CollectBalance:", result)
+                running[key] = false
+                return
+            end
+
+            remote = result
+
+            while running[key] and not unloading do
+                for plotId = 1, 20 do
+                    if not running[key] or unloading then
+                        break
+                    end
+
+                    local callOk, err = pcall(function()
+                        remote:FireServer(plotId)
+                    end)
+
+                    if not callOk then
+                        warn("[dilangauto] Plot", plotId, err)
+                    end
+                end
+
+                if running[key] and not unloading then
+                    task.wait(2)
+                end
+            end
+        end)
     end
 )
 
-addToggle(Farm, "Farm", "Auto Rebirth", "No game action connected.")
-addToggle(Farm, "Farm", "Potion Manager", "No potion logic connected.")
+addToggle(
+    Farm,
+    "Farm",
+    "Auto Rebirth",
+    "No game action connected."
+)
+
+addToggle(
+    Farm,
+    "Farm",
+    "Potion Manager",
+    "No potion logic connected."
+)
 
 -- UNITS
 
@@ -307,58 +280,73 @@ addToggle(Tower, "Tower", "Run Summary", "No tracking connected.")
 
 -- SETTINGS
 
-addToggle(Settings, "Settings", "Notifications", "Toast notifications setting.")
-addToggle(Settings, "Settings", "Compact Layout", "No layout change connected.")
-addToggle(Settings, "Settings", "Remember UI Position", "No position saving connected.")
+addToggle(
+    Settings,
+    "Settings",
+    "Notifications",
+    "No notification system connected."
+)
 
 addToggle(
     Settings,
     "Settings",
-    "Anti-AFK",
-    "Maintain Anti-AFK connection.",
-    setAntiAfk
+    "Compact Layout",
+    "No layout change connected."
 )
+
+addToggle(
+    Settings,
+    "Settings",
+    "Remember UI Position",
+    "No position saving connected."
+)
+
+-- MANUAL SAVE
+
+addButton(Settings, "Save Settings Now", function()
+    saveConfig()
+    print("[dilangauto] Settings saved")
+end)
 
 -- UNLOAD
 
-local function unload()
-    if unloaded then return end
+addButton(Settings, "Unload dilangauto", function()
+    if unloading then
+        return
+    end
 
-    unloaded = true
+    unloading = true
 
     for key in pairs(running) do
         running[key] = false
     end
 
-    for key, connection in pairs(connections) do
+    saveConfig()
+
+    for _, connection in ipairs(connections) do
         pcall(function()
             connection:Disconnect()
         end)
-        connections[key] = nil
     end
 
-    saveConfig()
+    table.clear(connections)
 
-    pcall(function()
-        Rayfield:Destroy()
-    end)
-end
-
-addButton(Settings, "Unload dilangauto", unload)
-
--- RESTORE SAVED STATES
-
-configReady = true
-
-for _, restore in ipairs(restorations) do
-    if unloaded then break end
-
-    local ok, err = pcall(restore)
-    if not ok then
-        notifyError("Restore toggle", err)
+    if Rayfield and type(Rayfield.Destroy) == "function" then
+        pcall(function()
+            Rayfield:Destroy()
+        end)
+    elseif Window and type(Window.Destroy) == "function" then
+        pcall(function()
+            Window:Destroy()
+        end)
     end
+end)
+
+-- RESTORE SAVED ENABLED CALLBACKS AFTER ALL TOGGLES EXIST
+
+for _, restore in ipairs(restorers) do
+    restore()
 end
 
-saveConfig()
 print("[dilangauto] UI loaded")
-notify("dilangauto loaded", "Saved settings restored")
+print("[dilangauto] Saved settings restored")
