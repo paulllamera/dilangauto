@@ -15,7 +15,7 @@ local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Window = Rayfield:CreateWindow({
     name = "dilangauto",
-    subtitle = "Halloween Dashboard",
+    subtitle = "Automations",
     sidebarLayout = true,
 })
 
