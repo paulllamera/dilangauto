@@ -1,5 +1,7 @@
+
 -- dilangauto.lua
--- Rayfield Gen2
+-- Rayfield Gen2 UI
+
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
@@ -7,35 +9,34 @@ local VirtualUser = game:GetService("VirtualUser")
 local CONFIG_FILE = "dilangauto_config.json"
 local TOAST_ICON = 125823673784681
 
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+local Rayfield = loadstring(game:HttpGet(
+    "https://sirius.menu/gen2"
+))()
 
 local Window = Rayfield:CreateWindow({
     name = "dilangauto",
     subtitle = "Automation",
-    sidebarLayout = true
+    sidebarLayout = true,
 })
 
 local LocalPlayer = Players.LocalPlayer
 local running = {}
 local connections = {}
-local toggleRestorations = {}
+local restorations = {}
 local unloaded = false
 local configReady = false
 
 -- CONFIG
 
 local function loadConfig()
-    if type(isfile) ~= "function" or type(readfile) ~= "function" then
-        return {
-            toggles = {}
-        }
+    if type(isfile) ~= "function"
+        or type(readfile) ~= "function" then
+        return { toggles = {} }
     end
 
     local ok, exists = pcall(isfile, CONFIG_FILE)
     if not ok or not exists then
-        return {
-            toggles = {}
-        }
+        return { toggles = {} }
     end
 
     local readOk, result = pcall(function()
@@ -50,9 +51,7 @@ local function loadConfig()
     end
 
     warn("[dilangauto] Config invalid; defaults used")
-    return {
-        toggles = {}
-    }
+    return { toggles = {} }
 end
 
 local Config = loadConfig()
@@ -78,13 +77,11 @@ end
 -- NOTIFICATIONS
 
 local function notify(title, subtitle)
-    if unloaded then
-        return
-    end
+    if unloaded then return end
 
     local options = {
         title = tostring(title),
-        icon = TOAST_ICON
+        icon = TOAST_ICON,
     }
 
     if subtitle then
@@ -107,16 +104,12 @@ end
 
 -- TABS
 
-local function makeTab(name, iconId)
-    local options = {
-        name = name
-    }
-    if iconId then
-        options.icon = iconId
-    end
-
+local function makeTab(name, icon)
     local ok, tab = pcall(function()
-        return Window:CreateTab(options)
+        return Window:CreateTab({
+            name = name,
+            icon = icon,
+        })
     end)
 
     if not ok then
@@ -141,9 +134,7 @@ local function setAntiAfk(enabled)
         connections.antiAfk = nil
     end
 
-    if not enabled then
-        return
-    end
+    if not enabled then return end
 
     assert(LocalPlayer, "LocalPlayer unavailable")
 
@@ -162,9 +153,7 @@ end
 -- TOGGLE BUILDER
 
 local function addToggle(tab, tabName, name, purpose, onChanged)
-    if not tab then
-        return
-    end
+    if not tab then return end
 
     local key = tabName .. "_" .. name:gsub("%W", "")
     local savedValue = Config.toggles[key] == true
@@ -172,9 +161,7 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
     running[key] = savedValue
 
     local function applyValue(value, showToast)
-        if unloaded then
-            return
-        end
+        if unloaded then return end
 
         value = value == true
         running[key] = value
@@ -189,7 +176,14 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
             if not ok then
                 notifyError(name, err)
             end
+        else
+            print("[dilangauto][Info] " .. purpose)
         end
+
+        print(
+            "[dilangauto][" .. tabName .. "] "
+            .. name .. ": " .. tostring(value)
+        )
 
         if showToast then
             notify(name, value and "Enabled" or "Disabled")
@@ -201,9 +195,10 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
             name = name,
             flag = key,
             value = savedValue,
+
             callback = function(value)
                 applyValue(value, true)
-            end
+            end,
         })
     end)
 
@@ -212,8 +207,8 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
         return
     end
 
-    -- Restore each saved callback once after all controls exist.
-    table.insert(toggleRestorations, function()
+    -- Apply saved state once after all controls exist.
+    table.insert(restorations, function()
         applyValue(savedValue, false)
     end)
 end
@@ -221,23 +216,19 @@ end
 -- BUTTON BUILDER
 
 local function addButton(tab, name, callback)
-    if not tab then
-        return
-    end
+    if not tab then return end
 
     local ok, err = pcall(function()
         tab:CreateButton({
             name = name,
             callback = function()
-                if unloaded then
-                    return
-                end
+                if unloaded then return end
 
                 local runOk, runErr = pcall(callback)
                 if not runOk then
                     notifyError(name, runErr)
                 end
-            end
+            end,
         })
     end)
 
@@ -248,48 +239,55 @@ end
 
 -- HALLOWEEN
 
-addToggle(Halloween, "Halloween", "Auto Trick-or-Treat", "No game action connected.")
+addToggle(
+    Halloween,
+    "Halloween",
+    "Auto Trick-or-Treat",
+    "No game action connected."
+)
 
-addToggle(Halloween, "Halloween", "Auto Collect Candy", "No game action connected.")
+addToggle(
+    Halloween,
+    "Halloween",
+    "Auto Collect Candy",
+    "No game action connected."
+)
 
-addToggle(Halloween, "Halloween", "Event Alerts", "No alert system connected.")
+addToggle(
+    Halloween,
+    "Halloween",
+    "Event Alerts",
+    "No alert system connected."
+)
 
 -- FARM
 
 addToggle(Farm, "Farm", "Auto Roll", "No game action connected.")
 addToggle(Farm, "Farm", "Auto Sell", "No game action connected.")
 
-addToggle(Farm, "Farm", "Auto Collect", "Collection logic not connected.", function(enabled)
-    -- Placeholder for authorized collection logic.
-    running["AutoCollectAllPlots"] = enabled
-    if not enabled then
-        print("[dilangauto] Auto Collect stopped")
-        return
-    end
+-- AUTO COLLECT
+-- Worker state uses same key as toggle state.
+-- Connect authorized collection logic in your own game here.
 
-    task.spawn(function()
-        local remote = game:GetService("ReplicatedStorage"):WaitForChild("Network"):WaitForChild("PlotService")
-            :WaitForChild("RE"):WaitForChild("CollectBalance")
+addToggle(
+    Farm,
+    "Farm",
+    "Auto Collect",
+    "Collection handler not connected.",
+    function(enabled)
+        local key = "Farm_AutoCollect"
 
-        while running[key] do
-            for plotId = 1, 20 do
-                if not running[key] then
-                    break
-                end
+        running[key] = enabled
 
-                local ok, err = pcall(function()
-                    remote:FireServer(plotId)
-                end)
-
-                if not ok then
-                    warn("[dilangauto] Plot", plotId, err)
-                end
-            end
-
-            task.wait(2)
+        if not enabled then
+            print("[dilangauto] Auto Collect stopped")
+            return
         end
-    end)
-end)
+
+        print("[dilangauto] Auto Collect enabled")
+        -- Add your own game's authorized collection handler here.
+    end
+)
 
 addToggle(Farm, "Farm", "Auto Rebirth", "No game action connected.")
 addToggle(Farm, "Farm", "Potion Manager", "No potion logic connected.")
@@ -310,20 +308,22 @@ addToggle(Tower, "Tower", "Run Summary", "No tracking connected.")
 -- SETTINGS
 
 addToggle(Settings, "Settings", "Notifications", "Toast notifications setting.")
-
 addToggle(Settings, "Settings", "Compact Layout", "No layout change connected.")
 addToggle(Settings, "Settings", "Remember UI Position", "No position saving connected.")
 
-addToggle(Settings, "Settings", "Anti-AFK", "Maintain Anti-AFK connection.", setAntiAfk)
+addToggle(
+    Settings,
+    "Settings",
+    "Anti-AFK",
+    "Maintain Anti-AFK connection.",
+    setAntiAfk
+)
 
 -- UNLOAD
 
 local function unload()
-    if unloaded then
-        return
-    end
+    if unloaded then return end
 
-    -- Stop active loops and connections first.
     unloaded = true
 
     for key in pairs(running) do
@@ -346,14 +346,12 @@ end
 
 addButton(Settings, "Unload dilangauto", unload)
 
--- RESTORE SAVED STATE
+-- RESTORE SAVED STATES
 
 configReady = true
 
-for _, restore in ipairs(toggleRestorations) do
-    if unloaded then
-        break
-    end
+for _, restore in ipairs(restorations) do
+    if unloaded then break end
 
     local ok, err = pcall(restore)
     if not ok then
@@ -361,6 +359,6 @@ for _, restore in ipairs(toggleRestorations) do
     end
 end
 
--- Silent autosave. No save button or save toast.
 saveConfig()
+print("[dilangauto] UI loaded")
 notify("dilangauto loaded", "Saved settings restored")
