@@ -87,7 +87,21 @@ addToggle(
     Farm,
     "Farm",
     "Auto Collect",
-    "Placeholder only. No game actions connected."
+    "Collect balance from active plots.",
+    function()
+        local plots = workspace.Plots:GetChildren()
+        local collectRemote = game:GetService("ReplicatedStorage")
+            :WaitForChild("Network")
+            :WaitForChild("PlotService")
+            :WaitForChild("RE")
+            :WaitForChild("CollectBalance")
+
+        for index, plot in ipairs(plots) do
+            if plot:IsA("Model") or plot:IsA("Folder") then
+                collectRemote:FireServer(index)
+            end
+        end
+    end
 )
 
 addToggle(
