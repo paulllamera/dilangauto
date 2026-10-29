@@ -5,35 +5,81 @@
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
+local TeleportService = game:GetService("TeleportService")
 
+local LocalPlayer = Players.LocalPlayer
 local CONFIG_FILE = "dilangauto_config.json"
 local TOAST_ICON = 125823673784681
 
-local Rayfield = loadstring(game:HttpGet(
-    "https://sirius.menu/gen2"
-))()
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Window = Rayfield:CreateWindow({
     name = "dilangauto",
     subtitle = "Halloween Dashboard",
     sidebarLayout = true,
-
-    -- Rayfield's built-in config persistence.
-    configuration = {
-        autoSave = true,
-        autoLoad = true,
-        fileName = "dilangauto",
-    },
 })
 
 local running = {}
 local connections = {}
-local toggleCallbacks = {}
 local unloaded = false
+local configReady = false
+local reconnectBusy = false
+local lastReconnectAttempt = 0
 
--- TOASTS
+-- CONFIG
+
+local function loadConfig()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return { toggles = {} }
+    end
+
+    local ok, exists = pcall(isfile, CONFIG_FILE)
+    if not ok or not exists then
+        return { toggles = {} }
+    end
+
+    local readOk, result = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+
+    if readOk and type(result) == "table" then
+        if type(result.toggles) ~= "table" then
+            result.toggles = {}
+        end
+        return result
+    end
+
+    warn("[dilangauto] Config invalid; defaults used")
+    return { toggles = {} }
+end
+
+local Config = loadConfig()
+Config.toggles = type(Config.toggles) == "table" and Config.toggles or {}
+
+local function saveConfig()
+    if type(writefile) ~= "function" then
+        warn("[dilangauto] writefile unavailable")
+        return false
+    end
+
+    local ok, err = pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
+    end)
+
+    if not ok then
+        warn("[dilangauto] Config save failed:", err)
+        return false
+    end
+
+    return true
+end
+
+-- NOTIFICATIONS
+
 local function notify(title, subtitle)
-    if unloaded then return end
+    if unloaded then
+        return
+    end
 
     local options = {
         title = tostring(title),
@@ -58,63 +104,13 @@ local function notifyError(action, err)
     notify(action .. " failed", tostring(err))
 end
 
--- CUSTOM CONFIG
-local function loadConfig()
-    if type(isfile) ~= "function"
-        or type(readfile) ~= "function" then
-        return { toggles = {} }
-    end
-
-    local existsOk, exists = pcall(isfile, CONFIG_FILE)
-    if not existsOk or not exists then
-        return { toggles = {} }
-    end
-
-    local ok, result = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIG_FILE))
-    end)
-
-    if ok and type(result) == "table" then
-        if type(result.toggles) ~= "table" then
-            result.toggles = {}
-        end
-        return result
-    end
-
-    warn("[dilangauto] Config invalid; defaults used")
-    return { toggles = {} }
-end
-
-local Config = loadConfig()
-Config.toggles = type(Config.toggles) == "table"
-    and Config.toggles or {}
-
-local function saveConfig()
-    if type(writefile) ~= "function" then
-        warn("[dilangauto] writefile unavailable")
-        return false
-    end
-
-    local ok, err = pcall(function()
-        writefile(
-            CONFIG_FILE,
-            HttpService:JSONEncode(Config)
-        )
-    end)
-
-    if not ok then
-        warn("[dilangauto] Config save failed:", err)
-        return false
-    end
-
-    return true
-end
-
 -- TABS
-local function makeTab(name, icon)
+
+local function makeTab(name, iconId)
     local options = { name = name }
-    if icon then
-        options.icon = icon
+
+    if iconId then
+        options.icon = iconId
     end
 
     local ok, tab = pcall(function()
@@ -136,6 +132,7 @@ local Tower = makeTab("Tower", 6031265976)
 local Settings = makeTab("Settings", 7733960981)
 
 -- ANTI-AFK
+
 local function setAntiAfk(enabled)
     if connections.antiAfk then
         connections.antiAfk:Disconnect()
@@ -146,10 +143,9 @@ local function setAntiAfk(enabled)
         return
     end
 
-    local player = Players.LocalPlayer
-    assert(player, "LocalPlayer unavailable")
+    assert(LocalPlayer, "LocalPlayer unavailable")
 
-    connections.antiAfk = player.Idled:Connect(function()
+    connections.antiAfk = LocalPlayer.Idled:Connect(function()
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton2(Vector2.new())
@@ -157,9 +153,67 @@ local function setAntiAfk(enabled)
     end)
 end
 
+-- AUTO RECONNECT
+-- Retries a failed teleport. Cannot run after client disconnects or closes.
+
+local function attemptReconnect()
+    if unloaded or not configReady then
+        return
+    end
+
+    if not running["Settings_AutoReconnect"] then
+        return
+    end
+
+    local now = os.clock()
+
+    if reconnectBusy or now - lastReconnectAttempt < 15 then
+        return
+    end
+
+    reconnectBusy = true
+    lastReconnectAttempt = now
+
+    task.spawn(function()
+        task.wait(3)
+
+        if not unloaded and running["Settings_AutoReconnect"] then
+            local ok, err = pcall(function()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end)
+
+            if not ok then
+                warn("[dilangauto] Reconnect attempt failed:", err)
+            end
+        end
+
+        task.wait(5)
+        reconnectBusy = false
+    end)
+end
+
+connections.teleportFailed = TeleportService.TeleportInitFailed:Connect(
+    function(player, teleportResult, errorMessage)
+        if player ~= LocalPlayer then
+            return
+        end
+
+        warn(
+            "[dilangauto] Teleport failed:",
+            teleportResult,
+            errorMessage
+        )
+
+        attemptReconnect()
+    end
+)
+
 -- TOGGLES
+
 local function addToggle(tab, tabName, name, purpose, onChanged)
-    if not tab then return end
+    if not tab then
+        return
+    end
 
     local key = tabName .. "_" .. name:gsub("%W", "")
     local savedValue = Config.toggles[key] == true
@@ -167,13 +221,17 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
     running[key] = savedValue
 
     local function applyValue(value, showToast)
-        if unloaded then return end
+        if unloaded then
+            return
+        end
 
+        value = value == true
         running[key] = value
         Config.toggles[key] = value
 
-        -- Save silently. Never toast "Config saved".
-        saveConfig()
+        if configReady then
+            saveConfig()
+        end
 
         if onChanged then
             local ok, err = pcall(onChanged, value)
@@ -204,36 +262,34 @@ local function addToggle(tab, tabName, name, purpose, onChanged)
         return
     end
 
-    toggleCallbacks[key] = {
-        apply = applyValue,
-        value = savedValue,
-    }
+    -- Apply saved state once after controls exist.
+    task.defer(function()
+        if unloaded then
+            return
+        end
 
-    -- Rayfield may not fire callback when loading initial value.
-    -- Apply saved state explicitly so behavior matches saved config.
-    if savedValue and onChanged then
-        task.defer(function()
-            if not unloaded then
-                local callbackOk, err = pcall(onChanged, true)
-                if not callbackOk then
-                    notifyError("Restore " .. name, err)
-                end
-            end
-        end)
-    end
+        applyValue(savedValue, false)
+    end)
 end
 
 -- BUTTONS
+
 local function addButton(tab, name, callback)
-    if not tab then return end
+    if not tab then
+        return
+    end
 
     local ok, err = pcall(function()
         tab:CreateButton({
             name = name,
+
             callback = function()
-                if unloaded then return end
+                if unloaded then
+                    return
+                end
 
                 local runOk, runErr = pcall(callback)
+
                 if not runOk then
                     notifyError(name, runErr)
                 end
@@ -247,63 +303,57 @@ local function addButton(tab, name, callback)
 end
 
 -- HALLOWEEN
-addToggle(Halloween, "Halloween", "Auto Trick-or-Treat",
-    "Placeholder: no game action connected.")
 
-addToggle(Halloween, "Halloween", "Auto Collect Candy",
-    "Placeholder: no game action connected.")
+addToggle(
+    Halloween,
+    "Halloween",
+    "Auto Trick-or-Treat",
+    "UI only; no game action connected."
+)
 
-addToggle(Halloween, "Halloween", "Event Alerts",
-    "Placeholder: no alert system connected.")
+addToggle(
+    Halloween,
+    "Halloween",
+    "Auto Collect Candy",
+    "UI only; no game action connected."
+)
+
+addToggle(
+    Halloween,
+    "Halloween",
+    "Event Alerts",
+    "UI only; no alert system connected."
+)
 
 -- FARM
-addToggle(Farm, "Farm", "Auto Roll",
-    "Placeholder: no game action connected.")
 
-addToggle(Farm, "Farm", "Auto Sell",
-    "Placeholder: no game action connected.")
-
-addToggle(Farm, "Farm", "Auto Collect",
-    "UI toggle only; collection remote not connected.")
-
-addToggle(Farm, "Farm", "Auto Rebirth",
-    "Placeholder: no game action connected.")
-
-addToggle(Farm, "Farm", "Potion Manager",
-    "Placeholder: no potion logic connected.")
+addToggle(Farm, "Farm", "Auto Roll", "UI only.")
+addToggle(Farm, "Farm", "Auto Sell", "UI only.")
+addToggle(Farm, "Farm", "Auto Collect", "UI only; collection remote not connected.")
+addToggle(Farm, "Farm", "Auto Rebirth", "UI only.")
+addToggle(Farm, "Farm", "Potion Manager", "UI only.")
 
 -- UNITS
-addToggle(Units, "Units", "Equip Best",
-    "Placeholder: no unit action connected.")
 
-addToggle(Units, "Units", "Lock Rare Units",
-    "Placeholder: no unit action connected.")
-
-addToggle(Units, "Units", "Trait Filter",
-    "Placeholder: no filter connected.")
-
-addToggle(Units, "Units", "Grade Filter",
-    "Placeholder: no filter connected.")
+addToggle(Units, "Units", "Equip Best", "UI only.")
+addToggle(Units, "Units", "Lock Rare Units", "UI only.")
+addToggle(Units, "Units", "Trait Filter", "UI only.")
+addToggle(Units, "Units", "Grade Filter", "UI only.")
 
 -- TOWER
-addToggle(Tower, "Tower", "Potion Loadout",
-    "Placeholder: no loadout connected.")
 
-addToggle(Tower, "Tower", "Reward Alerts",
-    "Placeholder: no alerts connected.")
-
-addToggle(Tower, "Tower", "Run Summary",
-    "Placeholder: no tracking connected.")
+addToggle(Tower, "Tower", "Potion Loadout", "UI only.")
+addToggle(Tower, "Tower", "Reward Alerts", "UI only.")
+addToggle(Tower, "Tower", "Run Summary", "UI only.")
 
 -- SETTINGS
-addToggle(Settings, "Settings", "Notifications",
-    "Toast notifications enabled.")
 
-addToggle(Settings, "Settings", "Compact Layout",
-    "Placeholder: layout change not connected.")
+addToggle(Settings, "Settings", "Notifications", "Toast notifications.", function(enabled)
+    -- Toast display setting placeholder.
+end)
 
-addToggle(Settings, "Settings", "Remember UI Position",
-    "Placeholder: position saving not connected.")
+addToggle(Settings, "Settings", "Compact Layout", "UI only.")
+addToggle(Settings, "Settings", "Remember UI Position", "UI only.")
 
 addToggle(
     Settings,
@@ -313,19 +363,34 @@ addToggle(
     setAntiAfk
 )
 
--- MANUAL SAVE BUTTON
--- Optional; automatic save still happens on each toggle change.
-addButton(Settings, "Save Config Now", function()
-    if saveConfig() then
-        notify("Config", "Saved")
-    else
-        notify("Config", "Save failed; check executor file API")
+addToggle(
+    Settings,
+    "Settings",
+    "Auto Reconnect",
+    "Retries failed teleport requests.",
+    function(enabled)
+        if enabled then
+            attemptReconnect()
+        end
+    end
+)
+
+addButton(Settings, "Reconnect Now", function()
+    local ok, err = pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+    if not ok then
+        notifyError("Reconnect", err)
     end
 end)
 
 -- UNLOAD
+
 local function unload()
-    if unloaded then return end
+    if unloaded then
+        return
+    end
 
     saveConfig()
     unloaded = true
@@ -338,6 +403,7 @@ local function unload()
         pcall(function()
             connection:Disconnect()
         end)
+
         connections[key] = nil
     end
 
@@ -348,14 +414,12 @@ end
 
 addButton(Settings, "Unload dilangauto", unload)
 
--- LOAD RAYFIELD CONFIGURATION
--- Supports Rayfield's own saved control state.
-local loadOk, loadErr = pcall(function()
-    Rayfield:LoadConfiguration()
-end)
+-- FINISH CONFIG RESTORE
 
-if not loadOk then
-    warn("[dilangauto] Rayfield config load failed:", loadErr)
-end
+-- Prevent saves until all controls have been created.
+configReady = true
 
-notify("dilangauto loaded", "Config restored where available")
+-- Silent autosave after setup.
+saveConfig()
+
+notify("dilangauto loaded", "Config restored")
