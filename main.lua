@@ -88,19 +88,35 @@ addToggle(
     "Farm",
     "Auto Collect",
     "Collect balance from active plots.",
-    function()
-        local plots = workspace.Plots:GetChildren()
-        local collectRemote = game:GetService("ReplicatedStorage")
+    function(enabled)
+        if not enabled then
+            return
+        end
+
+        local plotsFolder = workspace:FindFirstChild("Plots")
+        if not plotsFolder then
+            warn("[dilangauto] workspace.Plots not found")
+            return
+        end
+
+        local remote = game:GetService("ReplicatedStorage")
             :WaitForChild("Network")
             :WaitForChild("PlotService")
             :WaitForChild("RE")
             :WaitForChild("CollectBalance")
 
-        for index, plot in ipairs(plots) do
-            if plot:IsA("Model") or plot:IsA("Folder") then
-                collectRemote:FireServer(index)
-            end
+        print("[dilangauto] Plot count:", #plotsFolder:GetChildren())
+
+        for _, plot in ipairs(plotsFolder:GetChildren()) do
+            print(
+                "[dilangauto] Plot:",
+                plot.Name,
+                plot.ClassName
+            )
         end
+
+        print("[dilangauto] CollectBalance remote:", remote.ClassName)
+        print("[dilangauto] Plot inspection complete; no requests sent")
     end
 )
 
