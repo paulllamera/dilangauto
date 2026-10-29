@@ -7,64 +7,58 @@ local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 
 local CONFIG_FILE = "dilangauto_config.json"
+local TOAST_ICON = 125823673784681
 
+local Rayfield = loadstring(game:HttpGet(
+    "https://sirius.menu/gen2"
+))()
+
+local Window = Rayfield:CreateWindow({
+    name = "dilangauto",
+    subtitle = "Halloween Dashboard",
+    sidebarLayout = true,
+
+    -- Rayfield's built-in config persistence.
+    configuration = {
+        autoSave = true,
+        autoLoad = true,
+        fileName = "dilangauto",
+    },
+})
+
+local running = {}
+local connections = {}
+local toggleCallbacks = {}
+local unloaded = false
+
+-- TOASTS
 local function notify(title, subtitle)
-    local message = tostring(title)
+    if unloaded then return end
+
+    local options = {
+        title = tostring(title),
+        icon = TOAST_ICON,
+    }
+
     if subtitle then
-        message ..= " - " .. tostring(subtitle)
+        options.subtitle = tostring(subtitle)
     end
 
     local ok, err = pcall(function()
-        Window:Toast({
-            title = tostring(title),
-            subtitle = subtitle and tostring(subtitle) or nil,
-        })
+        Window:Toast(options)
     end)
 
     if not ok then
         warn("[dilangauto] Toast failed:", err)
-        print("[dilangauto] " .. message)
     end
 end
 
-local function loadRayfield()
-    local ok, result = pcall(function()
-        return loadstring(game:HttpGet(
-            "https://sirius.menu/gen2"
-        ))()
-    end)
-
-    if not ok then
-        warn("[dilangauto] Rayfield load failed:", result)
-        return nil
-    end
-
-    return result
+local function notifyError(action, err)
+    warn("[dilangauto] " .. action .. " failed:", err)
+    notify(action .. " failed", tostring(err))
 end
 
-local Rayfield = loadRayfield()
-if not Rayfield then return end
-
-local windowOk, WindowResult = pcall(function()
-    return Rayfield:CreateWindow({
-        name = "dilangauto",
-        subtitle = "Halloween Dashboard",
-        sidebarLayout = true,
-    })
-end)
-
-if not windowOk then
-    warn("[dilangauto] Window creation failed:", WindowResult)
-    return
-end
-
-Window = WindowResult
-
-local running = {}
-local connections = {}
-local unloaded = false
-
--- CONFIG LOAD
+-- CUSTOM CONFIG
 local function loadConfig()
     if type(isfile) ~= "function"
         or type(readfile) ~= "function" then
@@ -81,53 +75,54 @@ local function loadConfig()
     end)
 
     if ok and type(result) == "table" then
-        result.toggles = type(result.toggles) == "table"
-            and result.toggles or {}
+        if type(result.toggles) ~= "table" then
+            result.toggles = {}
+        end
         return result
     end
 
-    warn("[dilangauto] Config invalid; defaults loaded")
+    warn("[dilangauto] Config invalid; defaults used")
     return { toggles = {} }
 end
 
 local Config = loadConfig()
+Config.toggles = type(Config.toggles) == "table"
+    and Config.toggles or {}
 
--- CONFIG AUTO-SAVE
 local function saveConfig()
     if type(writefile) ~= "function" then
-        notify("Config not saved", "Delta file API unavailable")
+        warn("[dilangauto] writefile unavailable")
         return false
     end
 
     local ok, err = pcall(function()
-        writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
+        writefile(
+            CONFIG_FILE,
+            HttpService:JSONEncode(Config)
+        )
     end)
 
     if not ok then
         warn("[dilangauto] Config save failed:", err)
-        notify("Save failed", tostring(err))
         return false
     end
 
     return true
 end
 
--- TOAST HELPER
-local function toastState(name, enabled)
-    notify(name, enabled and "Enabled" or "Disabled")
-end
-
 -- TABS
 local function makeTab(name, icon)
     local options = { name = name }
-    if icon then options.icon = icon end
+    if icon then
+        options.icon = icon
+    end
 
     local ok, tab = pcall(function()
         return Window:CreateTab(options)
     end)
 
     if not ok then
-        warn("[dilangauto] Tab creation failed:", name, tab)
+        notifyError("Create tab: " .. name, tab)
         return nil
     end
 
@@ -148,13 +143,11 @@ local function setAntiAfk(enabled)
     end
 
     if not enabled then
-        return true
+        return
     end
 
     local player = Players.LocalPlayer
-    if not player then
-        error("LocalPlayer unavailable")
-    end
+    assert(player, "LocalPlayer unavailable")
 
     connections.antiAfk = player.Idled:Connect(function()
         pcall(function()
@@ -162,54 +155,94 @@ local function setAntiAfk(enabled)
             VirtualUser:ClickButton2(Vector2.new())
         end)
     end)
-
-    return true
 end
 
--- TOGGLE BUILDER
+-- TOGGLES
 local function addToggle(tab, tabName, name, purpose, onChanged)
     if not tab then return end
 
     local key = tabName .. "_" .. name:gsub("%W", "")
     local savedValue = Config.toggles[key] == true
 
-    local ok, err = pcall(function()
-        tab:CreateToggle({
+    running[key] = savedValue
+
+    local function applyValue(value, showToast)
+        if unloaded then return end
+
+        running[key] = value
+        Config.toggles[key] = value
+
+        -- Save silently. Never toast "Config saved".
+        saveConfig()
+
+        if onChanged then
+            local ok, err = pcall(onChanged, value)
+            if not ok then
+                notifyError(name, err)
+            end
+        end
+
+        if showToast then
+            notify(name, value and "Enabled" or "Disabled")
+        end
+    end
+
+    local ok, toggle = pcall(function()
+        return tab:CreateToggle({
             name = name,
             flag = key,
             value = savedValue,
 
             callback = function(value)
+                applyValue(value, true)
+            end,
+        })
+    end)
+
+    if not ok then
+        notifyError("Create toggle: " .. name, toggle)
+        return
+    end
+
+    toggleCallbacks[key] = {
+        apply = applyValue,
+        value = savedValue,
+    }
+
+    -- Rayfield may not fire callback when loading initial value.
+    -- Apply saved state explicitly so behavior matches saved config.
+    if savedValue and onChanged then
+        task.defer(function()
+            if not unloaded then
+                local callbackOk, err = pcall(onChanged, true)
+                if not callbackOk then
+                    notifyError("Restore " .. name, err)
+                end
+            end
+        end)
+    end
+end
+
+-- BUTTONS
+local function addButton(tab, name, callback)
+    if not tab then return end
+
+    local ok, err = pcall(function()
+        tab:CreateButton({
+            name = name,
+            callback = function()
                 if unloaded then return end
 
-                running[key] = value
-                Config.toggles[key] = value
-
-                local saveOk = saveConfig()
-                toastState(name, value)
-
-                if saveOk then
-                    notify("Config saved", name)
-                end
-
-                if onChanged then
-                    local callbackOk, callbackErr =
-                        pcall(onChanged, value)
-
-                    if not callbackOk then
-                        warn("[dilangauto] Action failed:", name, callbackErr)
-                        notify("Action failed", tostring(callbackErr))
-                    end
-                else
-                    notify("Info", purpose)
+                local runOk, runErr = pcall(callback)
+                if not runOk then
+                    notifyError(name, runErr)
                 end
             end,
         })
     end)
 
     if not ok then
-        warn("[dilangauto] Toggle creation failed:", name, err)
-        notify("Toggle error", name)
+        notifyError("Create button: " .. name, err)
     end
 end
 
@@ -230,48 +263,8 @@ addToggle(Farm, "Farm", "Auto Roll",
 addToggle(Farm, "Farm", "Auto Sell",
     "Placeholder: no game action connected.")
 
-addToggle(
-    Farm,
-    "Farm",
-    "Auto Collect",
-    "Collect balances from all plot IDs.",
-    function(enabled)
-        local key = "AutoCollectAllPlots"
-
-        running[key] = enabled
-
-        if not enabled then
-            print("[dilangauto] Auto Collect stopped")
-            return
-        end
-
-        task.spawn(function()
-            local remote = game:GetService("ReplicatedStorage")
-                :WaitForChild("Network")
-                :WaitForChild("PlotService")
-                :WaitForChild("RE")
-                :WaitForChild("CollectBalance")
-
-            while running[key] do
-                for plotId = 1, 20 do
-                    if not running[key] then
-                        break
-                    end
-
-                    local ok, err = pcall(function()
-                        remote:FireServer(plotId)
-                    end)
-
-                    if not ok then
-                        warn("[dilangauto] Plot", plotId, err)
-                    end
-                end
-
-                task.wait(2)
-            end
-        end)
-    end
-)
+addToggle(Farm, "Farm", "Auto Collect",
+    "UI toggle only; collection remote not connected.")
 
 addToggle(Farm, "Farm", "Auto Rebirth",
     "Placeholder: no game action connected.")
@@ -304,7 +297,7 @@ addToggle(Tower, "Tower", "Run Summary",
 
 -- SETTINGS
 addToggle(Settings, "Settings", "Notifications",
-    "Toast notifications are active.")
+    "Toast notifications enabled.")
 
 addToggle(Settings, "Settings", "Compact Layout",
     "Placeholder: layout change not connected.")
@@ -312,15 +305,28 @@ addToggle(Settings, "Settings", "Compact Layout",
 addToggle(Settings, "Settings", "Remember UI Position",
     "Placeholder: position saving not connected.")
 
-addToggle(Settings, "Settings", "Anti-AFK",
-    "Prevent idle disconnect where supported.",
-    setAntiAfk)
+addToggle(
+    Settings,
+    "Settings",
+    "Anti-AFK",
+    "Anti-AFK connection.",
+    setAntiAfk
+)
+
+-- MANUAL SAVE BUTTON
+-- Optional; automatic save still happens on each toggle change.
+addButton(Settings, "Save Config Now", function()
+    if saveConfig() then
+        notify("Config", "Saved")
+    else
+        notify("Config", "Save failed; check executor file API")
+    end
+end)
 
 -- UNLOAD
 local function unload()
     if unloaded then return end
 
-    Config.toggles = Config.toggles or {}
     saveConfig()
     unloaded = true
 
@@ -340,29 +346,16 @@ local function unload()
     end)
 end
 
-if Settings then
-    pcall(function()
-        Settings:CreateButton({
-            name = "Unload dilangauto",
-            callback = function()
-                notify("dilangauto", "Unloading UI")
-                unload()
-            end,
-        })
-    end)
+addButton(Settings, "Unload dilangauto", unload)
+
+-- LOAD RAYFIELD CONFIGURATION
+-- Supports Rayfield's own saved control state.
+local loadOk, loadErr = pcall(function()
+    Rayfield:LoadConfiguration()
+end)
+
+if not loadOk then
+    warn("[dilangauto] Rayfield config load failed:", loadErr)
 end
 
--- RESTORE ANTI-AFK
-if Config.toggles["Settings_AntiAFK"] == true then
-    local ok, err = pcall(setAntiAfk, true)
-
-    if ok then
-        running["Settings_AntiAFK"] = true
-        notify("Anti-AFK", "Restored from config")
-    else
-        warn("[dilangauto] Anti-AFK restore failed:", err)
-        notify("Anti-AFK restore failed", tostring(err))
-    end
-end
-
-notify("dilangauto loaded", "Config auto-save active")
+notify("dilangauto loaded", "Config restored where available")
